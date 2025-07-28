@@ -6,9 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 WinKit is a Windows setup automation toolkit designed to streamline the process of setting up a new Windows computer. The main script `winkit.ps1` handles:
 
-1. **Bloatware Removal**: Uninstalls non-essential Microsoft and Dell applications
-2. **Essential Software Installation**: Installs development and productivity tools via winget
-3. **Logging**: Comprehensive logging with timestamped entries
+1. **Smart Installation**: Scans for already installed programs and only installs what's missing
+2. **Bloatware Removal**: Uninstalls non-essential Microsoft and Dell applications
+3. **Essential Software Installation**: Installs development and productivity tools via winget
+4. **Configuration Management**: Sets up developer tool configurations and aliases
+5. **Logging**: Comprehensive logging with timestamped entries
 
 ## Commands
 
@@ -16,6 +18,9 @@ WinKit is a Windows setup automation toolkit designed to streamline the process 
 ```powershell
 # Run full setup (requires administrator)
 .\winkit.ps1
+
+# Scan and show what would be installed (no changes made)
+.\winkit.ps1 -ScanOnly
 
 # Run with verbose output
 .\winkit.ps1 -Verbose
@@ -54,9 +59,11 @@ Copy-Configs
 ### Key Functions
 - `Write-Log`: Centralized logging with timestamp and level (INFO/WARNING/ERROR)
 - `Test-Administrator`: Verifies script is running with admin privileges
+- `Get-InstalledPrograms`: Scans system for already installed programs to avoid reinstalling
+- `Show-InstallationPlan`: Displays what will be installed/removed (used with -ScanOnly)
 - `Install-Winget`: Ensures winget is available before software installation
 - `Remove-Bloatware`: Removes Microsoft and Dell pre-installed apps via AppxPackage cmdlets
-- `Install-Software`: Installs software using winget with error handling
+- `Install-Software`: Installs only missing software using winget (skips already installed)
 - `Install-DirectDownloads`: Downloads and installs software not available in winget (Koofr, Drime)
 - `Copy-Configs`: Copies configuration files from the `configs/` directory to appropriate locations (Neovim, WezTerm, PowerShell profile, and Clink)
 

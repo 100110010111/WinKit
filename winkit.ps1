@@ -15,6 +15,7 @@
 param(
     [switch]$SkipBloatwareRemoval,
     [switch]$SkipSoftwareInstall,
+    [switch]$ScanOnly,
     [switch]$Verbose
 )
 
@@ -45,6 +46,71 @@ function Test-Administrator {
     $CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
     $Principal = New-Object Security.Principal.WindowsPrincipal($CurrentUser)
     return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Get all installed programs
+function Get-InstalledPrograms {
+    Write-Log "Scanning installed programs..."
+    
+    $InstalledPrograms = @{}
+    
+    # Get programs from winget
+    try {
+        $WingetList = winget list --disable-interactivity 2>$null | Out-String
+        $WingetLines = $WingetList -split "`n" | Where-Object { $_ -match '\S' }
+        
+        # Skip header lines and parse the rest
+        $DataStarted = $false
+        foreach ($Line in $WingetLines) {
+            if ($Line -match '^-+\s+-+') {
+                $DataStarted = $true
+                continue
+            }
+            
+            if ($DataStarted -and $Line -match '\S') {
+                # Extract the ID from the line (usually the second column)
+                $Parts = $Line -split '\s{2,}'
+                if ($Parts.Count -ge 2) {
+                    $Id = $Parts[1].Trim()
+                    if ($Id -and $Id -ne 'Id') {
+                        $InstalledPrograms[$Id] = $true
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log "Failed to get winget list: $($_.Exception.Message)" -Level "WARNING"
+    }
+    
+    # Check for specific programs that might not show in winget
+    # Check for Node.js
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['OpenJS.NodeJS'] = $true
+    }
+    
+    # Check for Git
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['Git.Git'] = $true
+    }
+    
+    # Check for Docker
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['Docker.DockerDesktop'] = $true
+    }
+    
+    # Check for Claude Code
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['ClaudeCode'] = $true
+    }
+    
+    # Check for Neovim
+    if (Get-Command nvim -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['Neovim.Neovim'] = $true
+    }
+    
+    Write-Log "Found $($InstalledPrograms.Count) installed programs"
+    return $InstalledPrograms
 }
 
 # Install winget if not present
@@ -159,8 +225,87 @@ function Remove-Bloatware {
     Write-Log "Bloatware removal completed"
 }
 
+# Show installation plan
+function Show-InstallationPlan {
+    param(
+        [hashtable]$InstalledPrograms
+    )
+    
+    Write-Log "=== WinKit Installation Plan ==="
+    
+    # Software to install with their winget IDs
+    $SoftwareList = @(
+        @{ Name = "Node.js"; Id = "OpenJS.NodeJS" },
+        @{ Name = "Proton Mail"; Id = "ProtonTechnologies.ProtonMail" },
+        @{ Name = "Proton Drive"; Id = "ProtonTechnologies.ProtonDrive" },
+        @{ Name = "Proton VPN"; Id = "ProtonTechnologies.ProtonVPN" },
+        @{ Name = "Git for Windows"; Id = "Git.Git" },
+        @{ Name = "PowerShell 7"; Id = "Microsoft.PowerShell" },
+        @{ Name = "VSCodium"; Id = "VSCodium.VSCodium" },
+        @{ Name = "Claude Desktop"; Id = "Anthropic.Claude" },
+        @{ Name = "Standard Notes"; Id = "StandardNotes.StandardNotes" },
+        @{ Name = "Docker Desktop"; Id = "Docker.DockerDesktop" },
+        @{ Name = "Espanso"; Id = "Espanso.Espanso" },
+        @{ Name = "Google Chrome"; Id = "Google.Chrome" },
+        @{ Name = "1Password"; Id = "AgileBits.1Password" },
+        @{ Name = "jq"; Id = "jqlang.jq" },
+        @{ Name = "Fork"; Id = "Fork.Fork" },
+        @{ Name = "Neovim"; Id = "Neovim.Neovim" },
+        @{ Name = "WezTerm"; Id = "wez.wezterm" },
+        @{ Name = "Clink"; Id = "chrisant996.Clink" }
+    )
+    
+    $ToInstall = @()
+    $AlreadyInstalled = @()
+    
+    foreach ($Software in $SoftwareList) {
+        if ($InstalledPrograms.ContainsKey($Software.Id)) {
+            $AlreadyInstalled += $Software.Name
+        } else {
+            $ToInstall += $Software.Name
+        }
+    }
+    
+    # Check Claude Code separately
+    if ($InstalledPrograms.ContainsKey('ClaudeCode')) {
+        $AlreadyInstalled += "Claude Code (npm)"
+    } else {
+        $ToInstall += "Claude Code (npm)"
+    }
+    
+    # Direct downloads
+    $ToInstall += "Koofr (direct download)"
+    $ToInstall += "Drime (direct download)"
+    
+    Write-Host "`nAlready Installed ($($AlreadyInstalled.Count)):" -ForegroundColor Green
+    foreach ($App in $AlreadyInstalled | Sort-Object) {
+        Write-Host "  ✓ $App" -ForegroundColor DarkGray
+    }
+    
+    Write-Host "`nTo Be Installed ($($ToInstall.Count)):" -ForegroundColor Yellow
+    foreach ($App in $ToInstall | Sort-Object) {
+        Write-Host "  • $App" -ForegroundColor White
+    }
+    
+    Write-Host "`nBloatware to Remove:" -ForegroundColor Red
+    Write-Host "  • Microsoft Store apps (Weather, Skype, Xbox, etc.)" -ForegroundColor White
+    Write-Host "  • Dell pre-installed software" -ForegroundColor White
+    
+    Write-Host "`nConfiguration Files to Copy:" -ForegroundColor Cyan
+    Write-Host "  • Neovim config" -ForegroundColor White
+    Write-Host "  • WezTerm config" -ForegroundColor White
+    Write-Host "  • PowerShell profile with aliases" -ForegroundColor White
+    Write-Host "  • Clink configuration" -ForegroundColor White
+    
+    Write-Host ""
+}
+
 # Install software using winget
 function Install-Software {
+    param(
+        [hashtable]$InstalledPrograms = @{}
+    )
+    
     Write-Log "Starting software installation..."
     
     # Software to install with their winget IDs
@@ -187,22 +332,19 @@ function Install-Software {
     
     foreach ($Software in $SoftwareList) {
         try {
-            Write-Log "Checking if $($Software.Name) is already installed..."
-            
-            # Check if already installed using winget list
-            $InstalledCheck = winget list --id $Software.Id --exact 2>&1
-            
-            if ($InstalledCheck -match "No installed package found") {
-                Write-Log "Installing $($Software.Name)..."
-                $Result = winget install --id $Software.Id --accept-package-agreements --accept-source-agreements --silent
-                
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Log "Successfully installed $($Software.Name)"
-                } else {
-                    Write-Log "Installation of $($Software.Name) failed with exit code: $LASTEXITCODE" -Level "ERROR"
-                }
-            } else {
+            # Check if already installed using our scan
+            if ($InstalledPrograms.ContainsKey($Software.Id)) {
                 Write-Log "$($Software.Name) is already installed, skipping..."
+                continue
+            }
+            
+            Write-Log "Installing $($Software.Name)..."
+            $Result = winget install --id $Software.Id --accept-package-agreements --accept-source-agreements --silent
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Successfully installed $($Software.Name)"
+            } else {
+                Write-Log "Installation of $($Software.Name) failed with exit code: $LASTEXITCODE" -Level "ERROR"
             }
         }
         catch {
@@ -212,12 +354,11 @@ function Install-Software {
     
     # Install Claude Code via npm
     try {
-        Write-Log "Installing Claude Code via npm..."
         # Check if already installed
-        $ClaudePath = Get-Command claude -ErrorAction SilentlyContinue
-        if ($ClaudePath) {
-            Write-Log "Claude Code is already installed"
+        if ($InstalledPrograms.ContainsKey('ClaudeCode')) {
+            Write-Log "Claude Code is already installed, skipping..."
         } else {
+            Write-Log "Installing Claude Code via npm..."
             # Install Claude Code globally via npm
             $NpmResult = npm install -g @anthropic/claude-code 2>&1
             if ($LASTEXITCODE -eq 0) {
@@ -424,6 +565,16 @@ function Main {
         throw "Administrator privileges required"
     }
     
+    # Scan installed programs
+    $InstalledPrograms = Get-InstalledPrograms
+    
+    # If scan only mode, show plan and exit
+    if ($ScanOnly) {
+        Show-InstallationPlan -InstalledPrograms $InstalledPrograms
+        Write-Log "Scan-only mode completed. No changes were made."
+        return
+    }
+    
     # Install winget if needed
     if (-not (Install-Winget)) {
         Write-Log "Failed to install winget. Some installations may fail." -Level "WARNING"
@@ -438,7 +589,7 @@ function Main {
     
     # Install software
     if (-not $SkipSoftwareInstall) {
-        Install-Software
+        Install-Software -InstalledPrograms $InstalledPrograms
         Install-DirectDownloads
     } else {
         Write-Log "Skipping software installation (SkipSoftwareInstall flag set)"
