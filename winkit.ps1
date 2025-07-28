@@ -235,6 +235,71 @@ function Install-Software {
     Write-Log "Software installation completed"
 }
 
+# Install software that requires direct download
+function Install-DirectDownloads {
+    Write-Log "Starting direct download installations..."
+    
+    # Create temp directory for downloads
+    $TempDir = Join-Path $env:TEMP "WinKit_Downloads"
+    if (-not (Test-Path $TempDir)) {
+        New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+    }
+    
+    # Install Koofr
+    try {
+        Write-Log "Downloading Koofr desktop client..."
+        $KoofrUrl = "https://app.koofr.net/desktop/download/windows"
+        $KoofrInstaller = Join-Path $TempDir "KoofrSetup.exe"
+        
+        # Download the installer
+        Invoke-WebRequest -Uri $KoofrUrl -OutFile $KoofrInstaller -UseBasicParsing
+        
+        if (Test-Path $KoofrInstaller) {
+            Write-Log "Installing Koofr..."
+            Start-Process -FilePath $KoofrInstaller -ArgumentList "/S" -Wait
+            Write-Log "Koofr installation completed"
+        } else {
+            Write-Log "Failed to download Koofr installer" -Level "ERROR"
+        }
+    }
+    catch {
+        Write-Log "Failed to install Koofr: $($_.Exception.Message)" -Level "ERROR"
+    }
+    
+    # Install Drime
+    try {
+        Write-Log "Downloading Drime desktop client..."
+        # Note: The actual download URL might need to be updated based on Drime's website
+        $DrimeUrl = "https://drime.cloud/desktop/download/windows"
+        $DrimeInstaller = Join-Path $TempDir "DrimeSetup.exe"
+        
+        # Download the installer
+        Invoke-WebRequest -Uri $DrimeUrl -OutFile $DrimeInstaller -UseBasicParsing
+        
+        if (Test-Path $DrimeInstaller) {
+            Write-Log "Installing Drime..."
+            Start-Process -FilePath $DrimeInstaller -ArgumentList "/S" -Wait
+            Write-Log "Drime installation completed"
+        } else {
+            Write-Log "Failed to download Drime installer" -Level "ERROR"
+        }
+    }
+    catch {
+        Write-Log "Failed to install Drime: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "You may need to install Drime manually from https://drime.cloud/desktop" -Level "WARNING"
+    }
+    
+    # Cleanup temp directory
+    try {
+        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Log "Failed to cleanup temp directory: $($_.Exception.Message)" -Level "WARNING"
+    }
+    
+    Write-Log "Direct download installations completed"
+}
+
 # Copy configuration files
 function Copy-Configs {
     Write-Log "Starting configuration file copying..."
@@ -374,6 +439,7 @@ function Main {
     # Install software
     if (-not $SkipSoftwareInstall) {
         Install-Software
+        Install-DirectDownloads
     } else {
         Write-Log "Skipping software installation (SkipSoftwareInstall flag set)"
     }

@@ -57,6 +57,7 @@ Copy-Configs
 - `Install-Winget`: Ensures winget is available before software installation
 - `Remove-Bloatware`: Removes Microsoft and Dell pre-installed apps via AppxPackage cmdlets
 - `Install-Software`: Installs software using winget with error handling
+- `Install-DirectDownloads`: Downloads and installs software not available in winget (Koofr, Drime)
 - `Copy-Configs`: Copies configuration files from the `configs/` directory to appropriate locations (Neovim, WezTerm, PowerShell profile, and Clink)
 
 ### Software Installation List
@@ -81,6 +82,13 @@ The script installs these applications via winget IDs:
 - chrisant996.Clink
 
 Note: Claude Code is installed via npm (`npm install -g @anthropic/claude-code`) after Node.js installation.
+
+### Direct Download Applications
+The script also installs these applications via direct download:
+- **Koofr** - Cloud storage desktop sync client
+- **Drime** - Cloud storage desktop client
+
+These applications are downloaded from their official websites and installed automatically.
 
 ### Configuration Files
 The script includes a `configs/` directory containing:
