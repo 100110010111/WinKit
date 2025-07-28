@@ -83,5 +83,18 @@ function aliases {
     Write-Host "  mkcd     - Make directory and cd into it" -ForegroundColor Yellow
 }
 
+# Fix PowerShell colors for better visibility
+# This fixes the issue where parameters are hard to see
+Set-PSReadLineOption -Colors @{
+    Command = 'Yellow'
+    Parameter = 'Green'
+    Operator = 'Magenta'
+    Variable = 'Cyan'
+    String = 'Blue'
+    Number = 'White'
+    Type = 'Gray'
+    Comment = 'DarkGray'
+}
+
 # Welcome message
 Write-Host "PowerShell profile loaded. Type 'aliases' to see available shortcuts." -ForegroundColor Cyan
