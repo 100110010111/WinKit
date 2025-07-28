@@ -1,0 +1,14 @@
+# Log files
+*.log
+
+# Claude directory (if you want to exclude it)
+.claude/
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.tmp
+*.temp
