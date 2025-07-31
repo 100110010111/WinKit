@@ -52,35 +52,61 @@ function Test-Administrator {
 function Get-InstalledPrograms {
     Write-Log "Scanning installed programs..."
     
+    # Explicitly create as hashtable
     $InstalledPrograms = @{}
     
-    # Get programs from winget
-    try {
-        $WingetList = winget list --disable-interactivity 2>$null | Out-String
-        $WingetLines = $WingetList -split "`n" | Where-Object { $_ -match '\S' }
-        
-        # Skip header lines and parse the rest
-        $DataStarted = $false
-        foreach ($Line in $WingetLines) {
-            if ($Line -match '^-+\s+-+') {
-                $DataStarted = $true
-                continue
-            }
+    # Check if winget is available
+    $WingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $WingetCmd) {
+        Write-Log "Winget not found, skipping winget scan" -Level "WARNING"
+    } else {
+        # Get programs from winget
+        try {
+            Write-Log "Running winget list..."
+            $WingetOutput = winget list --disable-interactivity 2>$null
             
-            if ($DataStarted -and $Line -match '\S') {
-                # Extract the ID from the line (usually the second column)
-                $Parts = $Line -split '\s{2,}'
-                if ($Parts.Count -ge 2) {
-                    $Id = $Parts[1].Trim()
-                    if ($Id -and $Id -ne 'Id') {
-                        $InstalledPrograms[$Id] = $true
+            # Find the header line
+            $HeaderFound = $false
+            $DataStarted = $false
+            
+            foreach ($Line in $WingetOutput) {
+                # Look for the dashed line separator
+                if ($Line -match '^[\-]{3,}') {
+                    $DataStarted = $true
+                    continue
+                }
+                
+                # Process data lines
+                if ($DataStarted -and $Line.Trim() -ne '') {
+                    # Split by multiple spaces
+                    $Parts = $Line -split '\s{2,}'
+                    
+                    # The ID is typically in the second column
+                    if ($Parts.Count -ge 2) {
+                        $Id = $Parts[1].Trim()
+                        
+                        # Skip if it's the header row or looks like a version number
+                        if ($Id -and $Id -ne 'Id' -and $Id -ne '' -and 
+                            $Id -notmatch '^\d+\.\d+' -and 
+                            $Id -notmatch '^MSIX\\' -and
+                            $Id -notmatch 'ΓÇª') {
+                            
+                            # Special handling for ARP entries
+                            if ($Id -eq 'ARP\User\X64\Fork') {
+                                $InstalledPrograms['Fork.Fork'] = $true
+                                Write-Verbose "Found Fork (ARP): $Id"
+                            } else {
+                                $InstalledPrograms[$Id] = $true
+                                Write-Verbose "Found: $Id"
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-    catch {
-        Write-Log "Failed to get winget list: $($_.Exception.Message)" -Level "WARNING"
+        catch {
+            Write-Log "Failed to get winget list: $($_.Exception.Message)" -Level "WARNING"
+        }
     }
     
     # Check for specific programs that might not show in winget
@@ -109,7 +135,32 @@ function Get-InstalledPrograms {
         $InstalledPrograms['Neovim.Neovim'] = $true
     }
     
+    # Check for WezTerm
+    if (Get-Command wezterm -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['wez.wezterm'] = $true
+    }
+    
+    # Check for Fork (may be listed differently in winget)
+    if (Test-Path "$env:LOCALAPPDATA\Fork\Fork.exe") {
+        $InstalledPrograms['Fork.Fork'] = $true
+    }
+    
+    # Also check for Wispr Flow
+    if ($InstalledPrograms.ContainsKey('ARP\User\X64\WisprFlow')) {
+        $InstalledPrograms.Remove('ARP\User\X64\WisprFlow')
+    }
+    
     Write-Log "Found $($InstalledPrograms.Count) installed programs"
+    
+    # Debug: Show what was found
+    if ($VerbosePreference -eq 'Continue') {
+        Write-Verbose "Installed programs hashtable contents:"
+        foreach ($key in $InstalledPrograms.Keys) {
+            Write-Verbose "  - $key"
+        }
+    }
+    
+    # Return hashtable
     return $InstalledPrograms
 }
 
@@ -228,17 +279,26 @@ function Remove-Bloatware {
 # Show installation plan
 function Show-InstallationPlan {
     param(
-        [hashtable]$InstalledPrograms
+        [hashtable]$InstalledPrograms = @{}
     )
     
     Write-Log "=== WinKit Installation Plan ==="
     
+    # Debug check
+    if ($null -eq $InstalledPrograms) {
+        Write-Log "InstalledPrograms is null!" -Level "ERROR"
+        $InstalledPrograms = @{}
+    }
+    
+    Write-Verbose "Show-InstallationPlan received type: $($InstalledPrograms.GetType().FullName)"
+    Write-Verbose "Keys count: $($InstalledPrograms.Keys.Count)"
+    
     # Software to install with their winget IDs
     $SoftwareList = @(
         @{ Name = "Node.js"; Id = "OpenJS.NodeJS" },
-        @{ Name = "Proton Mail"; Id = "ProtonTechnologies.ProtonMail" },
-        @{ Name = "Proton Drive"; Id = "ProtonTechnologies.ProtonDrive" },
-        @{ Name = "Proton VPN"; Id = "ProtonTechnologies.ProtonVPN" },
+        @{ Name = "Proton Mail"; Id = "Proton.ProtonMail" },
+        @{ Name = "Proton Drive"; Id = "Proton.ProtonDrive" },
+        @{ Name = "Proton VPN"; Id = "Proton.ProtonVPN" },
         @{ Name = "Git for Windows"; Id = "Git.Git" },
         @{ Name = "PowerShell 7"; Id = "Microsoft.PowerShell" },
         @{ Name = "VSCodium"; Id = "VSCodium.VSCodium" },
@@ -259,15 +319,23 @@ function Show-InstallationPlan {
     $AlreadyInstalled = @()
     
     foreach ($Software in $SoftwareList) {
-        if ($InstalledPrograms.ContainsKey($Software.Id)) {
-            $AlreadyInstalled += $Software.Name
-        } else {
+        try {
+            if ($InstalledPrograms.ContainsKey($Software.Id)) {
+                $AlreadyInstalled += $Software.Name
+                Write-Verbose "MATCH: $($Software.Name) - ID: $($Software.Id)"
+            } else {
+                $ToInstall += $Software.Name
+                Write-Verbose "NO MATCH: $($Software.Name) - ID: $($Software.Id)"
+            }
+        }
+        catch {
+            Write-Log "Error checking $($Software.Name): $_" -Level "ERROR"
             $ToInstall += $Software.Name
         }
     }
     
     # Check Claude Code separately
-    if ($InstalledPrograms.ContainsKey('ClaudeCode')) {
+    if ($InstalledPrograms -is [hashtable] -and $InstalledPrograms.ContainsKey('ClaudeCode')) {
         $AlreadyInstalled += "Claude Code (npm)"
     } else {
         $ToInstall += "Claude Code (npm)"
@@ -279,23 +347,23 @@ function Show-InstallationPlan {
     
     Write-Host "`nAlready Installed ($($AlreadyInstalled.Count)):" -ForegroundColor Green
     foreach ($App in $AlreadyInstalled | Sort-Object) {
-        Write-Host "  ✓ $App" -ForegroundColor DarkGray
+        Write-Host "  [OK] $App" -ForegroundColor DarkGray
     }
     
     Write-Host "`nTo Be Installed ($($ToInstall.Count)):" -ForegroundColor Yellow
     foreach ($App in $ToInstall | Sort-Object) {
-        Write-Host "  • $App" -ForegroundColor White
+        Write-Host "  * $App" -ForegroundColor White
     }
     
     Write-Host "`nBloatware to Remove:" -ForegroundColor Red
-    Write-Host "  • Microsoft Store apps (Weather, Skype, Xbox, etc.)" -ForegroundColor White
-    Write-Host "  • Dell pre-installed software" -ForegroundColor White
+    Write-Host "  * Microsoft Store apps (Weather, Skype, Xbox, etc.)" -ForegroundColor White
+    Write-Host "  * Dell pre-installed software" -ForegroundColor White
     
     Write-Host "`nConfiguration Files to Copy:" -ForegroundColor Cyan
-    Write-Host "  • Neovim config" -ForegroundColor White
-    Write-Host "  • WezTerm config" -ForegroundColor White
-    Write-Host "  • PowerShell profile with aliases" -ForegroundColor White
-    Write-Host "  • Clink configuration" -ForegroundColor White
+    Write-Host "  * Neovim config" -ForegroundColor White
+    Write-Host "  * WezTerm config" -ForegroundColor White
+    Write-Host "  * PowerShell profile with aliases" -ForegroundColor White
+    Write-Host "  * Clink configuration" -ForegroundColor White
     
     Write-Host ""
 }
@@ -311,9 +379,9 @@ function Install-Software {
     # Software to install with their winget IDs
     $SoftwareList = @(
         @{ Name = "Node.js"; Id = "OpenJS.NodeJS" },
-        @{ Name = "Proton Mail"; Id = "ProtonTechnologies.ProtonMail" },
-        @{ Name = "Proton Drive"; Id = "ProtonTechnologies.ProtonDrive" },
-        @{ Name = "Proton VPN"; Id = "ProtonTechnologies.ProtonVPN" },
+        @{ Name = "Proton Mail"; Id = "Proton.ProtonMail" },
+        @{ Name = "Proton Drive"; Id = "Proton.ProtonDrive" },
+        @{ Name = "Proton VPN"; Id = "Proton.ProtonVPN" },
         @{ Name = "Git for Windows"; Id = "Git.Git" },
         @{ Name = "PowerShell 7"; Id = "Microsoft.PowerShell" },
         @{ Name = "VSCodium"; Id = "VSCodium.VSCodium" },
@@ -565,19 +633,33 @@ function Main {
         throw "Administrator privileges required"
     }
     
+    # Install winget if needed (before scanning)
+    if (-not (Install-Winget)) {
+        Write-Log "Failed to install winget. Some installations may fail." -Level "WARNING"
+    }
+    
     # Scan installed programs
     $InstalledPrograms = Get-InstalledPrograms
+    
+    # Ensure it's a hashtable
+    if ($InstalledPrograms -is [array]) {
+        Write-Log "Converting array to hashtable..."
+        $temp = @{}
+        foreach ($item in $InstalledPrograms) {
+            if ($item -is [hashtable]) {
+                foreach ($key in $item.Keys) {
+                    $temp[$key] = $item[$key]
+                }
+            }
+        }
+        $InstalledPrograms = $temp
+    }
     
     # If scan only mode, show plan and exit
     if ($ScanOnly) {
         Show-InstallationPlan -InstalledPrograms $InstalledPrograms
         Write-Log "Scan-only mode completed. No changes were made."
         return
-    }
-    
-    # Install winget if needed
-    if (-not (Install-Winget)) {
-        Write-Log "Failed to install winget. Some installations may fail." -Level "WARNING"
     }
     
     # Remove bloatware

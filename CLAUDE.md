@@ -70,9 +70,9 @@ Copy-Configs
 ### Software Installation List
 The script installs these applications via winget IDs:
 - OpenJS.NodeJS (Node.js)
-- ProtonTechnologies.ProtonMail
-- ProtonTechnologies.ProtonDrive
-- ProtonTechnologies.ProtonVPN
+- Proton.ProtonMail
+- Proton.ProtonDrive
+- Proton.ProtonVPN
 - Git.Git
 - Microsoft.PowerShell
 - VSCodium.VSCodium
