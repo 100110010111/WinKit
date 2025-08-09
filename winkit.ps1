@@ -16,7 +16,8 @@ param(
     [switch]$SkipBloatwareRemoval,
     [switch]$SkipSoftwareInstall,
     [switch]$ScanOnly,
-    [switch]$Verbose
+    [switch]$Verbose,
+    [switch]$Update
 )
 
 # Enable verbose output if requested
@@ -113,6 +114,11 @@ function Get-InstalledPrograms {
     # Check for Node.js
     if (Get-Command node -ErrorAction SilentlyContinue) {
         $InstalledPrograms['OpenJS.NodeJS'] = $true
+    }
+    
+    # Check for Go
+    if (Get-Command go -ErrorAction SilentlyContinue) {
+        $InstalledPrograms['GoLang.Go'] = $true
     }
     
     # Check for Git
@@ -296,6 +302,7 @@ function Show-InstallationPlan {
     # Software to install with their winget IDs
     $SoftwareList = @(
         @{ Name = "Node.js"; Id = "OpenJS.NodeJS" },
+        @{ Name = "Go"; Id = "GoLang.Go" },
         @{ Name = "Proton Mail"; Id = "Proton.ProtonMail" },
         @{ Name = "Proton Drive"; Id = "Proton.ProtonDrive" },
         @{ Name = "Proton VPN"; Id = "Proton.ProtonVPN" },
@@ -379,6 +386,7 @@ function Install-Software {
     # Software to install with their winget IDs
     $SoftwareList = @(
         @{ Name = "Node.js"; Id = "OpenJS.NodeJS" },
+        @{ Name = "Go"; Id = "GoLang.Go" },
         @{ Name = "Proton Mail"; Id = "Proton.ProtonMail" },
         @{ Name = "Proton Drive"; Id = "Proton.ProtonDrive" },
         @{ Name = "Proton VPN"; Id = "Proton.ProtonVPN" },
@@ -400,19 +408,35 @@ function Install-Software {
     
     foreach ($Software in $SoftwareList) {
         try {
-            # Check if already installed using our scan
-            if ($InstalledPrograms.ContainsKey($Software.Id)) {
+            # Check if already installed using our scan (unless updating)
+            if (-not $Update -and $InstalledPrograms.ContainsKey($Software.Id)) {
                 Write-Log "$($Software.Name) is already installed, skipping..."
                 continue
             }
             
             Write-Log "Installing $($Software.Name)..."
-            $Result = winget install --id $Software.Id --accept-package-agreements --accept-source-agreements --silent
+            
+            # Use upgrade for update mode, install for new installations
+            if ($Update) {
+                # Check if update is available first
+                $UpdateCheck = winget list --id $Software.Id --exact
+                if ($UpdateCheck -match "Available") {
+                    Write-Log "Update available for $($Software.Name), installing..."
+                    $Result = winget upgrade --id $Software.Id --accept-package-agreements --accept-source-agreements --silent
+                } else {
+                    Write-Log "$($Software.Name) is already up to date"
+                    continue
+                }
+            } else {
+                $Result = winget install --id $Software.Id --accept-package-agreements --accept-source-agreements --silent
+            }
             
             if ($LASTEXITCODE -eq 0) {
-                Write-Log "Successfully installed $($Software.Name)"
+                Write-Log "Successfully installed/updated $($Software.Name)"
+            } elseif ($LASTEXITCODE -eq -1978335189) {
+                Write-Log "$($Software.Name) is already up to date"
             } else {
-                Write-Log "Installation of $($Software.Name) failed with exit code: $LASTEXITCODE" -Level "ERROR"
+                Write-Log "Installation/update of $($Software.Name) failed with exit code: $LASTEXITCODE" -Level "ERROR"
             }
         }
         catch {
@@ -422,18 +446,31 @@ function Install-Software {
     
     # Install Claude Code via npm
     try {
-        # Check if already installed
-        if ($InstalledPrograms.ContainsKey('ClaudeCode')) {
+        # Check if already installed (unless updating)
+        if (-not $Update -and $InstalledPrograms.ContainsKey('ClaudeCode')) {
             Write-Log "Claude Code is already installed, skipping..."
         } else {
+            if ($Update -and $InstalledPrograms.ContainsKey('ClaudeCode')) {
+                Write-Log "Checking for Claude Code updates via npm..."
+                # Check if update available
+                $OutdatedCheck = npm outdated -g @anthropic-ai/claude-code 2>&1
+                if ($OutdatedCheck -match "@anthropic-ai/claude-code") {
+                    Write-Log "Update available for Claude Code"
+                } else {
+                    Write-Log "Claude Code is already up to date"
+                    continue
+                }
+            }
+            
             Write-Log "Installing Claude Code via npm..."
             # Install Claude Code globally via npm
-            $NpmResult = npm install -g @anthropic/claude-code 2>&1
+            $NpmResult = npm install -g @anthropic-ai/claude-code 2>&1
             if ($LASTEXITCODE -eq 0) {
                 Write-Log "Successfully installed Claude Code via npm"
+                Write-Log "You can now use 'claude' or 'cc' commands in your terminal"
             } else {
                 Write-Log "Failed to install Claude Code via npm: $NpmResult" -Level "ERROR"
-                Write-Log "You may need to install it manually from https://claude.ai/code" -Level "WARNING"
+                Write-Log "You may need to install it manually or check npm connectivity" -Level "WARNING"
             }
         }
     }
@@ -444,8 +481,62 @@ function Install-Software {
     Write-Log "Software installation completed"
 }
 
+# Get latest GitHub release info
+function Get-LatestGitHubRelease {
+    param(
+        [string]$Owner,
+        [string]$Repo,
+        [string]$AssetPattern
+    )
+    
+    try {
+        $ReleasesUrl = "https://api.github.com/repos/$Owner/$Repo/releases/latest"
+        $Release = Invoke-RestMethod -Uri $ReleasesUrl -UseBasicParsing
+        $Asset = $Release.assets | Where-Object { $_.name -like $AssetPattern } | Select-Object -First 1
+        
+        if ($Asset) {
+            return @{
+                Url = $Asset.browser_download_url
+                Version = $Release.tag_name
+                FileName = $Asset.name
+            }
+        }
+    }
+    catch {
+        Write-Log "Failed to get latest release from GitHub: $($_.Exception.Message)" -Level "WARNING"
+    }
+    
+    return $null
+}
+
+# Get installed app version
+function Get-InstalledAppVersion {
+    param(
+        [string]$AppName,
+        [string]$InstallPath
+    )
+    
+    try {
+        if (Test-Path $InstallPath) {
+            $FileInfo = Get-Item $InstallPath
+            if ($FileInfo.VersionInfo.FileVersion) {
+                return $FileInfo.VersionInfo.FileVersion
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Could not get version for $AppName"
+    }
+    
+    return $null
+}
+
 # Install software that requires direct download
 function Install-DirectDownloads {
+    param(
+        [hashtable]$InstalledPrograms = @{}
+    )
+    
     Write-Log "Starting direct download installations..."
     
     # Create temp directory for downloads
@@ -456,46 +547,110 @@ function Install-DirectDownloads {
     
     # Install Koofr
     try {
-        Write-Log "Downloading Koofr desktop client..."
-        $KoofrUrl = "https://app.koofr.net/desktop/download/windows"
-        $KoofrInstaller = Join-Path $TempDir "KoofrSetup.exe"
+        $KoofrExePath = "$env:LOCALAPPDATA\Koofr\Koofr.exe"
+        $KoofrInstalled = Test-Path $KoofrExePath
         
-        # Download the installer
-        Invoke-WebRequest -Uri $KoofrUrl -OutFile $KoofrInstaller -UseBasicParsing
-        
-        if (Test-Path $KoofrInstaller) {
-            Write-Log "Installing Koofr..."
-            Start-Process -FilePath $KoofrInstaller -ArgumentList "/S" -Wait
-            Write-Log "Koofr installation completed"
+        if ($KoofrInstalled -and -not $Update) {
+            Write-Log "Koofr is already installed, skipping..."
         } else {
-            Write-Log "Failed to download Koofr installer" -Level "ERROR"
+            $ShouldInstall = $true
+            
+            if ($Update -and $KoofrInstalled) {
+                # For Koofr, we can't easily check version, so prompt user
+                Write-Log "Koofr is installed but version check not available"
+                Write-Log "To update Koofr, please check manually at https://app.koofr.net"
+                $ShouldInstall = $false
+            }
+            
+            if ($ShouldInstall) {
+                Write-Log "Downloading Koofr desktop client..."
+                # Koofr direct download link
+                $KoofrUrl = "https://app.koofr.net/dl/apps/win"
+                $KoofrInstaller = Join-Path $TempDir "KoofrSetup.exe"
+                
+                # Download with proper headers
+                $Headers = @{
+                    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                Invoke-WebRequest -Uri $KoofrUrl -OutFile $KoofrInstaller -UseBasicParsing -Headers $Headers
+                
+                if (Test-Path $KoofrInstaller) {
+                    Write-Log "Installing Koofr..."
+                    Start-Process -FilePath $KoofrInstaller -ArgumentList "/S" -Wait
+                    Write-Log "Koofr installation completed"
+                } else {
+                    Write-Log "Failed to download Koofr installer" -Level "ERROR"
+                }
+            }
         }
     }
     catch {
         Write-Log "Failed to install Koofr: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "You may need to install Koofr manually from https://app.koofr.net" -Level "WARNING"
     }
     
     # Install Drime
     try {
-        Write-Log "Downloading Drime desktop client..."
-        # Note: The actual download URL might need to be updated based on Drime's website
-        $DrimeUrl = "https://drime.cloud/desktop/download/windows"
-        $DrimeInstaller = Join-Path $TempDir "DrimeSetup.exe"
+        $DrimeExePath = "$env:ProgramFiles\Drime\Drime.exe"
+        $DrimeInstalled = Test-Path $DrimeExePath
         
-        # Download the installer
-        Invoke-WebRequest -Uri $DrimeUrl -OutFile $DrimeInstaller -UseBasicParsing
-        
-        if (Test-Path $DrimeInstaller) {
-            Write-Log "Installing Drime..."
-            Start-Process -FilePath $DrimeInstaller -ArgumentList "/S" -Wait
-            Write-Log "Drime installation completed"
+        if ($DrimeInstalled -and -not $Update) {
+            Write-Log "Drime is already installed, skipping..."
         } else {
-            Write-Log "Failed to download Drime installer" -Level "ERROR"
+            Write-Log "Getting latest Drime release from GitHub..."
+            
+            # Get latest release info from GitHub
+            $DrimeRelease = Get-LatestGitHubRelease -Owner "drimecloud" -Repo "Drimeclientpublic" -AssetPattern "*Setup*.exe"
+            
+            if (-not $DrimeRelease) {
+                # Fallback to known release
+                Write-Log "Using fallback URL for Drime..."
+                $DrimeRelease = @{
+                    Url = "https://github.com/drimecloud/Drimeclientpublic/releases/download/v2.1.0/Drime-Setup-2.1.0.exe"
+                    Version = "v2.1.0"
+                }
+            }
+            
+            $ShouldInstall = $true
+            
+            if ($Update -and $DrimeInstalled) {
+                # Check if update needed
+                $InstalledVersion = Get-InstalledAppVersion -AppName "Drime" -InstallPath $DrimeExePath
+                $LatestVersion = $DrimeRelease.Version -replace '^v', ''
+                
+                if ($InstalledVersion -and $LatestVersion) {
+                    if ([version]$InstalledVersion -ge [version]$LatestVersion) {
+                        Write-Log "Drime is already up to date (version $InstalledVersion)"
+                        $ShouldInstall = $false
+                    } else {
+                        Write-Log "Drime update available: $InstalledVersion -> $LatestVersion"
+                    }
+                } else {
+                    Write-Log "Could not determine Drime version, proceeding with update"
+                }
+            }
+            
+            if ($ShouldInstall) {
+                Write-Log "Downloading Drime from: $($DrimeRelease.Url)"
+                $DrimeInstaller = Join-Path $TempDir "DrimeSetup.exe"
+                
+                # Download the installer
+                Invoke-WebRequest -Uri $DrimeRelease.Url -OutFile $DrimeInstaller -UseBasicParsing
+                
+                if (Test-Path $DrimeInstaller) {
+                    Write-Log "Installing Drime..."
+                    Start-Process -FilePath $DrimeInstaller -ArgumentList "/S" -Wait
+                    Write-Log "Drime installation completed"
+                } else {
+                    Write-Log "Failed to download Drime installer" -Level "ERROR"
+                }
+            }
         }
     }
     catch {
         Write-Log "Failed to install Drime: $($_.Exception.Message)" -Level "ERROR"
-        Write-Log "You may need to install Drime manually from https://drime.cloud/desktop" -Level "WARNING"
+        Write-Log "You may need to install Drime manually from https://github.com/drimecloud/Drimeclientpublic/releases" -Level "WARNING"
     }
     
     # Cleanup temp directory
@@ -622,9 +777,58 @@ function Copy-Configs {
     Write-Log "Configuration file copying completed"
 }
 
+# Update all installed software
+function Update-AllSoftware {
+    param(
+        [hashtable]$InstalledPrograms = @{}
+    )
+    
+    Write-Log "Starting update process for all installed software..."
+    
+    # Check for winget updates first
+    try {
+        Write-Log "Checking for available winget updates..."
+        $AvailableUpdates = winget upgrade --include-unknown
+        if ($AvailableUpdates -match "No installed package found") {
+            Write-Log "All winget packages are up to date"
+        } else {
+            Write-Log "Updating winget packages..."
+            $UpdateResult = winget upgrade --all --accept-package-agreements --accept-source-agreements
+            Write-Log "Winget update completed"
+        }
+    }
+    catch {
+        Write-Log "Failed to update winget packages: $($_.Exception.Message)" -Level "ERROR"
+    }
+    
+    # Update npm packages
+    try {
+        if (Get-Command npm -ErrorAction SilentlyContinue) {
+            Write-Log "Checking for npm updates..."
+            $OutdatedPackages = npm outdated -g --depth=0 2>&1
+            if ($OutdatedPackages -match "Package" -or $OutdatedPackages -match "MISSING") {
+                Write-Log "Updating global npm packages..."
+                npm update -g
+                Write-Log "npm update completed"
+            } else {
+                Write-Log "All npm packages are up to date"
+            }
+        }
+    }
+    catch {
+        Write-Log "Failed to update npm packages: $($_.Exception.Message)" -Level "WARNING"
+    }
+    
+    Write-Log "Note: Direct download apps (Koofr, Drime) will be checked for updates..."
+}
+
 # Main execution
 function Main {
-    Write-Log "=== WinKit Setup Started ==="
+    if ($Update) {
+        Write-Log "=== WinKit Update Mode Started ==="
+    } else {
+        Write-Log "=== WinKit Setup Started ==="
+    }
     Write-Log "Log file: $LogFile"
     
     # Check administrator privileges
@@ -669,10 +873,13 @@ function Main {
         Write-Log "Skipping bloatware removal (SkipBloatwareRemoval flag set)"
     }
     
-    # Install software
+    # Install/Update software
     if (-not $SkipSoftwareInstall) {
+        if ($Update) {
+            Update-AllSoftware -InstalledPrograms $InstalledPrograms
+        }
         Install-Software -InstalledPrograms $InstalledPrograms
-        Install-DirectDownloads
+        Install-DirectDownloads -InstalledPrograms $InstalledPrograms
     } else {
         Write-Log "Skipping software installation (SkipSoftwareInstall flag set)"
     }
@@ -680,7 +887,11 @@ function Main {
     # Copy configuration files
     Copy-Configs
     
-    Write-Log "=== WinKit Setup Completed ==="
+    if ($Update) {
+        Write-Log "=== WinKit Update Completed ==="
+    } else {
+        Write-Log "=== WinKit Setup Completed ==="
+    }
     Write-Log "Please review the log file for any errors or warnings: $LogFile"
     Write-Log "Some applications may require a system restart to function properly."
 }
